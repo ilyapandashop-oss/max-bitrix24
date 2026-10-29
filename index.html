@@ -4,8 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Написать в MAX</title>
+<script>
+// Netlify (free plan) injects a "Powered by Netlify" badge into every HTML response; remove it.
+(function () {
+  const isBadge = n => n.nodeType === 1 && (
+    /netlify|nf-|hud/i.test((n.id || '') + ' ' + (typeof n.className === 'string' ? n.className : '') + ' ' + (n.getAttribute('src') || '')) ||
+    n.hasAttribute('data-nf-variant') || (n.tagName.indexOf('-') > 0));
+  const sweep = () => document.querySelectorAll('body *, html > *').forEach(n => { if (isBadge(n)) n.remove(); });
+  new MutationObserver(sweep).observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('load', () => { sweep(); setTimeout(sweep, 1000); setTimeout(sweep, 3000); });
+})();
+</script>
 <script src="//api.bitrix24.com/api/v1/"></script>
 <style>
+  [id*="netlify" i], [class*="netlify" i], [data-nf-variant], iframe[src*="netlify"] { display: none !important; }
   body { font: 14px/1.4 "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 8px 4px; color: #333; background: transparent; }
   .group { margin-bottom: 6px; }
   .owner { color: #888; font-size: 12px; margin: 4px 0 2px; }
