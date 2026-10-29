@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Открыть в MAX</title>
+<script src="//api.bitrix24.com/api/v1/"></script>
+<style>
+  body { font: 14px/1.4 "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 16px; color: #333; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee; }
+  .row .info { flex: 1; }
+  .row .type { color: #888; font-size: 12px; }
+  button { background: #6a3df0; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #5830cc; }
+  .muted { color: #888; }
+  .err { color: #c00; }
+</style>
+</head>
+<body>
+<div id="app" class="muted">Загрузка…</div>
+
+<script>
+// ---------------- Настройки ----------------
+const CONFIG = {
+  // Шаблон ссылки на чат в MAX. {phone} подставляется как 79991234567 (без +).
+  // ПРОВЕРЬТЕ формат ссылки на актуальной документации MAX и при необходимости поменяйте.
+  linkTemplate: 'https://max.ru/+{phone}',
+
+  // Необязательно: код пользовательского поля контакта (например 'UF_CRM_MAX'),
+  // где хранится ссылка на профиль MAX или ник. Если заполнено — показывается первой кнопкой.
+  maxFieldCode: '',
+
+  // Размещения, в которые встраивается приложение.
+  placements: ['CRM_CONTACT_DETAIL_TAB']
+};
+// -------------------------------------------
+
+const app = document.getElementById('app');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function call(method, params) {
+  return new Promise((resolve, reject) => {
+    BX24.callMethod(method, params || {}, res => res.error() ? reject(res.error()) : resolve(res.data()));
+  });
+}
+
+function normalizePhone(raw) {
+  let d = String(raw).replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '8') d = '7' + d.slice(1);
+  if (d.length === 10) d = '7' + d;
+  return d;
+}
+
+function maxLink(phone) {
+  return CONFIG.linkTemplate.replace('{phone}', phone);
+}
+
+function openLink(url) {
+  window.open(url, '_blank', 'noopener');
+}
+
+async function install() {
+  app.textContent = 'Установка…';
+  const handler = location.origin + location.pathname;
+  for (const placement of CONFIG.placements) {
+    try { await call('placement.unbind', { PLACEMENT: placement, HANDLER: handler }); } catch (e) {}
+    await call('placement.bind', { PLACEMENT: placement, HANDLER: handler, TITLE: 'MAX' });
+  }
+  app.innerHTML = 'Приложение установлено. Откройте карточку контакта — там появится вкладка «MAX».';
+  BX24.installFinish();
+}
+
+async function showContact(id) {
+  const contact = await call('crm.contact.get', { id });
+  const phones = contact.PHONE || [];
+  const rows = [];
+
+  if (CONFIG.maxFieldCode && contact[CONFIG.maxFieldCode]) {
+    const v = String(contact[CONFIG.maxFieldCode]).trim();
+    const url = /^https?:\/\//i.test(v) ? v : 'https://max.ru/' + v.replace(/^@/, '');
+    rows.push({ title: v, type: 'Профиль MAX', url });
+  }
+  phones.forEach(p => {
+    const phone = normalizePhone(p.VALUE);
+    if (phone.length >= 10) rows.push({ title: p.VALUE, type: p.VALUE_TYPE || 'Телефон', url: maxLink(phone) });
+  });
+
+  if (!rows.length) {
+    app.innerHTML = '<span class="muted">У контакта нет телефона.</span>';
+    return;
+  }
+  app.innerHTML = rows.map((r, i) => `
+    <div class="row">
+      <div class="info"><div>${esc(r.title)}</div><div class="type">${esc(r.type)}</div></div>
+      <button data-i="${i}">НАПИСАТЬ В MAX</button>
+    </div>`).join('');
+  app.querySelectorAll('button').forEach(b => b.onclick = () => openLink(rows[b.dataset.i].url));
+  BX24.fitWindow();
+}
+
+BX24.init(async () => {
+  try {
+    const info = BX24.placement.info();
+    if (CONFIG.placements.includes(info.placement)) {
+      await showContact(info.options.ID);
+    } else {
+      await install();
+    }
+  } catch (e) {
+    app.innerHTML = '<span class="err">Ошибка: ' + esc(e && e.error_description || e && e.message || e) + '</span>';
+  }
+});
+</script>
+</body>
+</html>
