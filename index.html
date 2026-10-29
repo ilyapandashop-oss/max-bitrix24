@@ -3,14 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Открыть в MAX</title>
+<title>Написать в MAX</title>
 <script src="//api.bitrix24.com/api/v1/"></script>
 <style>
-  body { font: 14px/1.4 "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 16px; color: #333; }
-  .row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee; }
-  .row .info { flex: 1; }
+  body { font: 14px/1.4 "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 8px 4px; color: #333; background: transparent; }
+  .group { margin-bottom: 6px; }
+  .owner { color: #888; font-size: 12px; margin: 4px 0 2px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+  .row .info { flex: 1; min-width: 0; }
   .row .type { color: #888; font-size: 12px; }
-  button { background: #6a3df0; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 14px; }
+  button { background: #6a3df0; color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; white-space: nowrap; }
   button:hover { background: #5830cc; }
   .muted { color: #888; }
   .err { color: #c00; }
@@ -23,15 +25,21 @@
 // ---------------- Настройки ----------------
 const CONFIG = {
   // Шаблон ссылки на чат в MAX. {phone} подставляется как 79991234567 (без +).
-  // ПРОВЕРЬТЕ формат ссылки на актуальной документации MAX и при необходимости поменяйте.
   linkTemplate: 'https://max.ru/+{phone}',
 
   // Необязательно: код пользовательского поля контакта (например 'UF_CRM_MAX'),
   // где хранится ссылка на профиль MAX или ник. Если заполнено — показывается первой кнопкой.
   maxFieldCode: '',
 
-  // Размещения, в которые встраивается приложение.
-  placements: ['CRM_CONTACT_DETAIL_TAB']
+  // Вкладки в карточках. Ключ — размещение, значение — тип сущности.
+  tabs: {
+    CRM_CONTACT_DETAIL_TAB: 'contact',
+    CRM_DEAL_DETAIL_TAB: 'deal',
+    CRM_LEAD_DETAIL_TAB: 'lead'
+  },
+
+  // Пользовательский тип поля («Написать в MAX»), который можно добавить в карточку.
+  fieldType: { id: 'max_button', title: 'Написать в MAX', description: 'Кнопка открытия чата в MAX' }
 };
 // -------------------------------------------
 
@@ -51,58 +59,103 @@ function normalizePhone(raw) {
   return d;
 }
 
-function maxLink(phone) {
-  return CONFIG.linkTemplate.replace('{phone}', phone);
-}
-
-function openLink(url) {
-  window.open(url, '_blank', 'noopener');
-}
+const maxLink = phone => CONFIG.linkTemplate.replace('{phone}', phone);
+const openLink = url => window.open(url, '_blank', 'noopener');
+const fullName = c => [c.NAME, c.LAST_NAME].filter(Boolean).join(' ') || c.TITLE || '';
 
 async function install() {
   app.textContent = 'Установка…';
   const handler = location.origin + location.pathname;
-  for (const placement of CONFIG.placements) {
+
+  for (const placement of Object.keys(CONFIG.tabs)) {
     try { await call('placement.unbind', { PLACEMENT: placement, HANDLER: handler }); } catch (e) {}
     await call('placement.bind', { PLACEMENT: placement, HANDLER: handler, TITLE: 'MAX' });
   }
-  app.innerHTML = 'Приложение установлено. Откройте карточку контакта — там появится вкладка «MAX».';
+
+  const ft = { USER_TYPE_ID: CONFIG.fieldType.id, HANDLER: handler, TITLE: CONFIG.fieldType.title, DESCRIPTION: CONFIG.fieldType.description };
+  try { await call('userfieldtype.add', ft); } catch (e) { await call('userfieldtype.update', ft); }
+
+  app.innerHTML = 'Приложение установлено. Вкладка «MAX» появилась в контактах, сделках и лидах. ' +
+    'Тип поля «' + esc(CONFIG.fieldType.title) + '» можно добавить в карточку: Настроить карточку → Добавить поле → Создать поле.';
   BX24.installFinish();
 }
 
-async function showContact(id) {
-  const contact = await call('crm.contact.get', { id });
-  const phones = contact.PHONE || [];
-  const rows = [];
+// Возвращает группы {owner, items:[{title, type, url}]} для сущности.
+async function collect(type, id) {
+  const groups = [];
 
-  if (CONFIG.maxFieldCode && contact[CONFIG.maxFieldCode]) {
-    const v = String(contact[CONFIG.maxFieldCode]).trim();
-    const url = /^https?:\/\//i.test(v) ? v : 'https://max.ru/' + v.replace(/^@/, '');
-    rows.push({ title: v, type: 'Профиль MAX', url });
+  const fromEntity = (e, owner) => {
+    const items = [];
+    if (CONFIG.maxFieldCode && e[CONFIG.maxFieldCode]) {
+      const v = String(e[CONFIG.maxFieldCode]).trim();
+      items.push({ title: v, type: 'Профиль MAX', url: /^https?:\/\//i.test(v) ? v : 'https://max.ru/' + v.replace(/^@/, '') });
+    }
+    (e.PHONE || []).forEach(p => {
+      const phone = normalizePhone(p.VALUE);
+      if (phone.length >= 10) items.push({ title: p.VALUE, type: p.VALUE_TYPE || 'Телефон', url: maxLink(phone) });
+    });
+    if (items.length) groups.push({ owner, items });
+  };
+
+  if (type === 'contact') {
+    fromEntity(await call('crm.contact.get', { id }), '');
+  } else if (type === 'lead') {
+    fromEntity(await call('crm.lead.get', { id }), '');
+  } else if (type === 'company') {
+    fromEntity(await call('crm.company.get', { id }), '');
+  } else if (type === 'deal') {
+    const deal = await call('crm.deal.get', { id });
+    let links = [];
+    try { links = await call('crm.deal.contact.items.get', { id }); } catch (e) {}
+    for (const l of links) {
+      const c = await call('crm.contact.get', { id: l.CONTACT_ID });
+      fromEntity(c, fullName(c));
+    }
+    if (!groups.length && deal.COMPANY_ID && deal.COMPANY_ID !== '0') {
+      const co = await call('crm.company.get', { id: deal.COMPANY_ID });
+      fromEntity(co, co.TITLE || '');
+    }
   }
-  phones.forEach(p => {
-    const phone = normalizePhone(p.VALUE);
-    if (phone.length >= 10) rows.push({ title: p.VALUE, type: p.VALUE_TYPE || 'Телефон', url: maxLink(phone) });
-  });
+  return groups;
+}
 
-  if (!rows.length) {
-    app.innerHTML = '<span class="muted">У контакта нет телефона.</span>';
+function render(groups) {
+  if (!groups.length) {
+    app.innerHTML = '<span class="muted">Нет телефона для связи в MAX.</span>';
+    BX24.fitWindow();
     return;
   }
-  app.innerHTML = rows.map((r, i) => `
-    <div class="row">
-      <div class="info"><div>${esc(r.title)}</div><div class="type">${esc(r.type)}</div></div>
-      <button data-i="${i}">НАПИСАТЬ В MAX</button>
+  const flat = [];
+  const showOwner = groups.length > 1 || groups.some(g => g.owner);
+  app.innerHTML = groups.map(g => `
+    <div class="group">
+      ${showOwner && g.owner ? `<div class="owner">${esc(g.owner)}</div>` : ''}
+      ${g.items.map(it => { flat.push(it); return `
+        <div class="row">
+          <div class="info"><div>${esc(it.title)}</div><div class="type">${esc(it.type)}</div></div>
+          <button data-i="${flat.length - 1}">НАПИСАТЬ В MAX</button>
+        </div>`; }).join('')}
     </div>`).join('');
-  app.querySelectorAll('button').forEach(b => b.onclick = () => openLink(rows[b.dataset.i].url));
+  app.querySelectorAll('button').forEach(b => b.onclick = () => openLink(flat[b.dataset.i].url));
   BX24.fitWindow();
 }
+
+const UF_ENTITIES = { CRM_CONTACT: 'contact', CRM_DEAL: 'deal', CRM_LEAD: 'lead', CRM_COMPANY: 'company' };
 
 BX24.init(async () => {
   try {
     const info = BX24.placement.info();
-    if (CONFIG.placements.includes(info.placement)) {
-      await showContact(info.options.ID);
+    const opts = info.options || {};
+    if (CONFIG.tabs[info.placement]) {
+      render(await collect(CONFIG.tabs[info.placement], opts.ID));
+    } else if (info.placement === 'USERFIELD_TYPE') {
+      const type = UF_ENTITIES[String(opts.ENTITY_ID || '').toUpperCase()];
+      if (!type || !opts.ENTITY_VALUE_ID) {
+        app.innerHTML = '<span class="muted">Кнопка появится после сохранения карточки.</span>';
+        BX24.fitWindow();
+      } else {
+        render(await collect(type, opts.ENTITY_VALUE_ID));
+      }
     } else {
       await install();
     }
